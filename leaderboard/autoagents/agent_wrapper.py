@@ -142,6 +142,8 @@ class AgentWrapper(object):
         type_ = sensor_spec["type"]
         id_ = sensor_spec["id"]
         attributes = {}
+        attributes['ros_name'] = id_
+        attributes['role_name'] = id_
 
         if type_ == 'sensor.opendrive_map':
             attributes['reading_frequency'] = sensor_spec['reading_frequency']
@@ -250,6 +252,7 @@ class AgentWrapper(object):
                 for key, value in attributes.items():
                     bp.set_attribute(str(key), str(value))
                 sensor = CarlaDataProvider.get_world().spawn_actor(bp, sensor_transform, vehicle)
+                sensor.enable_for_ros()
 
             # setup callback
             sensor.listen(CallBack(id_, type_, sensor, self._agent.sensor_interface))
