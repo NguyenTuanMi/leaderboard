@@ -287,6 +287,8 @@ class ROSAgentWrapper(AgentWrapper):
     def _preprocess_sensor_spec(self, sensor_spec):
         type_, id_, sensor_transform, attributes = super(ROSAgentWrapper, self)._preprocess_sensor_spec(sensor_spec)
         new_type = self.SENSOR_TYPE_REMAPS.get(type_, type_)
+        attributes['ros_name'] = id_
+        attributes['role_name'] = id_
         return new_type, id_, sensor_transform, attributes
 
     def setup_sensors(self, vehicle):
