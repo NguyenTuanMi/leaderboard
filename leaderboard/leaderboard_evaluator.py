@@ -15,9 +15,9 @@ from __future__ import print_function
 import traceback
 import argparse
 from argparse import RawTextHelpFormatter
-from distutils.version import LooseVersion
 import importlib
 import os
+from packaging.version import parse as parse_version
 import pkg_resources
 import sys
 import carla
@@ -80,7 +80,7 @@ class LeaderboardEvaluator(object):
 
         dist = pkg_resources.get_distribution("carla")
         if dist.version != 'leaderboard':
-            if LooseVersion(dist.version) < LooseVersion('0.9.10'):
+            if parse_version(dist.version) < parse_version('0.9.10'):
                 raise ImportError("CARLA version 0.9.10.1 or newer required. CARLA version found: {}".format(dist))
 
         # Load agent
