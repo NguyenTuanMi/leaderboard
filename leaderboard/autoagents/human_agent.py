@@ -147,6 +147,11 @@ class HumanAgent(AutonomousAgent):
         sensors = [
             {'type': 'sensor.camera.rgb', 'x': 0.7, 'y': 0.0, 'z': 1.60, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0,
              'width': self.camera_width, 'height': self.camera_height, 'fov': 100, 'id': 'Center'},
+              {'type': 'sensor.lidar.ray_cast', 'x': 0.0, 'y': 0.0, 'z': 2.4, 'roll': 0.0, 'pitch': 0.0,
+               'yaw': 0.0, 'id': 'LIDAR'},
+              {'type': 'sensor.other.gnss', 'x': 1.0, 'y': 0.0, 'z': 2.0, 'id': 'GPS'},
+              {'type': 'sensor.other.imu', 'x': 2.0, 'y': 0.0, 'z': 2.0, 'roll': 0.0, 'pitch': 0.0,
+               'yaw': 0.0, 'id': 'IMU'},
         ]
 
         if self._left_mirror:
