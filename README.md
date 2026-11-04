@@ -14,3 +14,32 @@ Agents will face multiple traffic situations based in the NHTSA typology, such a
 The user can change the weather of the simulation, allowing the evaluation of the agent in a variety of weather conditions, including daylight scenes, sunset, rain, fog, and night, among others.
 
 More information can be found [here](https://leaderboard.carla.org/)
+
+## LLM scenario route generator
+
+`scenario_generator/scenario_generator.py` can turn a natural-language
+description into one or more validated route entries in
+`data/routes_devtest.xml`. It copies waypoints from an existing route, so the
+local or remote model does not have to invent map coordinates:
+
+```bash
+python3 scenario_generator/scenario_generator.py \
+  --template-route 0 \
+  --description "Add a pedestrian crossing and a control-loss event near the middle of the route"
+```
+
+The command previews the generated routes and requires `YES` before writing.
+It creates a timestamped backup by default. Use `--count 2` for two variants,
+`--max-scenarios 10` to cap generated scenarios, and `--yes` only for scripted
+use. The model endpoint is OpenAI-compatible and can be configured without
+changing code:
+
+```bash
+export SCENARIO_LLM_ENDPOINT=http://remote-host:8000/v1
+export SCENARIO_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+export SCENARIO_LLM_API_KEY=not-needed
+```
+
+The generator rejects unknown scenario types, missing parameters, invalid
+weather, invalid waypoint indices, and malformed model responses before
+modifying the XML. It uses only Python's standard library.
