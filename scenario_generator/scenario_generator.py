@@ -107,7 +107,7 @@ Use only scenario types from the supplied allowlist. waypoint_index is a
 zero-based index into the supplied template waypoints. Keep it away from the
 first and last waypoint when practical. Parameters must use the exact names
 from the scenario schema; intervals are objects with numeric "from" and "to".
-Generate no more than the requested route and scenario counts.
+Generate no more than the requested route and scenario counts. Please validate the positions and orientations of the scenarios you have generated with the main route. If scenarios are far from main route, they are not generated at all. 
 """
 
 
