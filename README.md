@@ -14,3 +14,62 @@ Agents will face multiple traffic situations based in the NHTSA typology, such a
 The user can change the weather of the simulation, allowing the evaluation of the agent in a variety of weather conditions, including daylight scenes, sunset, rain, fog, and night, among others.
 
 More information can be found [here](https://leaderboard.carla.org/)
+
+## LLM scenario route generator
+
+`scenario_generator/inference_server.py` can turn a natural-language
+description into one or more validated route entries in
+`data/routes_devtest.xml`. It copies waypoints from an existing route and needs
+a running CARLA server (same Python environment as `run_leaderboard.sh`, so
+`carla`, `scenario_runner` and this repo are importable). The generator loads the
+route's town and builds the same dense 1 m route that Leaderboard drives. The
+model only picks a `route_index` for each scenario; the trigger point (x, y, z,
+yaw) is taken from that route point and checked with Leaderboard's own
+`RouteParser.is_scenario_at_route`. Validation errors (bad index, scenarios too
+close along the route, invalid parameter values) are sent back to the model for a
+retry:
+
+```bash
+python3 scenario_generator/inference_server.py \
+  --template-route 0 \
+  --description "Add a pedestrian crossing and a control-loss event near the middle of the route" \
+  --carla-host localhost --carla-port 2000
+```
+
+Leave out `--description` to get an interactive prompt (`scenario> `) that reuses the
+same CARLA route for every request, so you only wait for the town to load once.
+Type a description and press Enter, `/count N` to change the number of variants,
+`/quit` to leave. Errors are shown and the session continues.
+
+To use the [`llm`](https://github.com/simonw/llm) library for the model call (its
+stored keys, aliases and plugins for local models), run `pip install llm`, then
+`llm keys set openai` and add `--backend llm --model gpt-4o`.
+
+Use `--min-spacing` (metres between triggers, default 10), `--sample-step`
+(metres between route points shown to the model, default 20) and `--max-completion-tokens`
+to tune it. Do not point it at a CARLA server that is running an evaluation, since
+the town is reloaded.
+
+The command previews the generated routes and requires `YES` before writing.
+It creates a timestamped backup by default. Use `--count 2` for two variants,
+`--max-scenarios 10` to cap generated scenarios, and `--yes` only for scripted
+use. The model endpoint is OpenAI-compatible and can be configured without
+changing code:
+
+```bash
+export SCENARIO_LLM_ENDPOINT=http://localhost:9000/v1
+export SCENARIO_LLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
+export SCENARIO_LLM_API_KEY=not-needed
+```
+
+For local endpoints (`localhost`, `127.0.0.1`, or `::1`), the generator
+intentionally bypasses inherited `HTTP_PROXY`/`HTTPS_PROXY` settings so those
+requests do not get sent to an external proxy. Remote model endpoints still
+use the server's normal proxy environment.
+
+The generator rejects unknown scenario types, missing parameters, invalid
+weather, invalid trigger positions/headings, and malformed model responses
+before modifying the XML. Trigger points are generated explicitly by the
+model and checked against the template route geometry. Failed generations are
+sent back to the model with validation feedback; `--max-requests` limits the
+number of attempts. It uses only Python's standard library.
