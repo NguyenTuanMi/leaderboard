@@ -40,10 +40,12 @@ class ScenarioGeneratorTests(unittest.TestCase):
             _validate_route(
                 {
                     "weather": [{"route_percentage": 0}],
-                    "scenarios": [{"type": "NotACarlaScenario", "waypoint_index": 1}],
+                    "scenarios": [{"type": "NotACarlaScenario",
+                                   "trigger_point": {"x": 1, "y": 2, "z": 3, "yaw": 0}}],
                 },
                 "Town12",
-                3,
+                [ET.fromstring("<position x='0' y='0' z='0'/>"),
+                 ET.fromstring("<position x='10' y='0' z='0'/>")],
                 10,
             )
 
@@ -52,25 +54,28 @@ class ScenarioGeneratorTests(unittest.TestCase):
             "<routes><route id='0' town='Town12'>"
             "<weathers><weather route_percentage='0' cloudiness='5'/></weathers>"
             "<waypoints><position x='1' y='2' z='3'/><position x='4' y='5' z='6'/></waypoints>"
-            "<scenarios /></route></routes>"
+            "<scenarios><scenario name='Existing_1' type='ControlLoss'>"
+            "<trigger_point x='10' y='20' z='30' yaw='180'/>"
+            "</scenario></scenarios></route></routes>"
         )
         template = root.find("route")
         generated = _validate_route(
             {
                 "weather": [{"route_percentage": 0, "cloudiness": 5}],
-                "scenarios": [{"type": "ControlLoss", "waypoint_index": 1, "yaw": 90, "parameters": {}}],
+                "scenarios": [{"type": "ControlLoss",
+                               "trigger_point": {"x": 2.5, "y": 3.5, "z": 4.5, "yaw": 45},
+                               "parameters": {}}],
             },
             "Town12",
-            2,
+            list(template.find("waypoints")),
             10,
         )
         _append_generated_routes(root, template, [generated], 1)
         route = root.findall("route")[1]
         trigger = route.find("./scenarios/scenario/trigger_point")
         self.assertEqual(route.attrib["id"], "1")
-        self.assertEqual(trigger.attrib["x"], "4")
-        self.assertEqual(trigger.attrib["yaw"], "90")
-
+        self.assertEqual(trigger.attrib["x"], "2.5")
+        self.assertEqual(trigger.attrib["yaw"], "45.0")
 
 if __name__ == "__main__":
     unittest.main()

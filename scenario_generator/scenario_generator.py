@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -95,19 +96,77 @@ waypoint coordinates. Return only one JSON object with this shape:
       "scenarios": [
         {
           "type": "ControlLoss",
-          "waypoint_index": 3,
-          "yaw": 0,
+          "trigger_point": {"x": 119.7, "y": 6100.9, "z": 358, "yaw": 179},
           "parameters": {}
         }
       ]
     }
   ]
 }
-Use only scenario types from the supplied allowlist. waypoint_index is a
-zero-based index into the supplied template waypoints. Keep it away from the
-first and last waypoint when practical. Parameters must use the exact names
-from the scenario schema; intervals are objects with numeric "from" and "to".
-Generate no more than the requested route and scenario counts. Please validate the positions and orientations of the scenarios you have generated with the main route. If scenarios are far from main route, they are not generated at all. 
+Use only scenario types from the supplied allowlist. Every scenario MUST
+contain an explicit trigger_point with numeric x, y, z, and yaw. Generate new
+positions; do not copy an existing scenario merely because it has the same
+type. Multiple scenarios of the same type must use different positions.
+Place every trigger on the supplied route geometry and set yaw to the road
+heading at that position. Do not use trigger_reference, waypoint_index, or
+yaw_offset.
+Parameters must use the exact names from the scenario schema; intervals are
+objects with numeric "from" and "to". Generate no more than the requested
+route and scenario counts.
+
+Here is a real CARLA routes_devtest.xml-style example. Learn the relationship
+between route waypoints, scenario trigger_point values, scenario type names,
+and scenario parameters from this example. This is an example of XML input,
+not output: your response must still be JSON.
+
+<route id="0" town="Town12">
+  <weathers>
+    <weather route_percentage="0" cloudiness="5.0"
+             precipitation="0.0" sun_altitude_angle="90.0"/>
+    <weather route_percentage="100" cloudiness="5.0"
+             precipitation="0.0" sun_altitude_angle="15.0"/>
+  </weathers>
+  <waypoints>
+    <position x="983.5" y="5382.2" z="371"/>
+    <position x="824.2" y="5575.3" z="371"/>
+    <position x="605.5" y="5575.5" z="370"/>
+    <position x="497.5" y="5718.3" z="368"/>
+    <position x="516.3" y="5897.4" z="364"/>
+  </waypoints>
+  <scenarios>
+    <scenario name="ParkingExit_1" type="ParkingExit">
+      <trigger_point x="983.5" y="5382.2" z="371" yaw="90"/>
+      <direction value="right"/>
+      <front_vehicle_distance value="9"/>
+      <behind_vehicle_distance value="9"/>
+    </scenario>
+    <scenario name="SignalizedJunctionLeftTurn_1"
+              type="SignalizedJunctionLeftTurn">
+      <trigger_point x="571.1" y="5579.4" z="370" yaw="180"/>
+      <flow_speed value="16.6"/>
+      <source_dist_interval from="30" to="65"/>
+    </scenario>
+    <scenario name="Accident_1" type="Accident">
+      <trigger_point x="427.2" y="6086.8" z="359" yaw="144"/>
+    </scenario>
+    <scenario name="ControlLoss_1" type="ControlLoss">
+      <trigger_point x="119.7" y="6100.9" z="358" yaw="179"/>
+    </scenario>
+  </scenarios>
+</route>
+
+Important example rules:
+1. A scenario trigger_point is not arbitrary. It must lie on the route and
+   its yaw must follow the road. CARLA rejects it when it is more than about
+   2 meters from the interpolated route or its yaw differs by more than about
+   10 degrees.
+2. The generator validates each returned trigger against the supplied route
+   polyline using CARLA's thresholds: horizontal distance < 2 meters, vertical
+   distance < 2 meters, and yaw difference < 10 degrees.
+3. Do not copy the example's absolute coordinates into a different town or
+   route. Use the runtime template waypoints supplied by the caller.
+4. If validation feedback is supplied, correct every listed scenario and
+   return the complete corrected JSON object.
 """
 
 
@@ -247,7 +306,7 @@ def _validate_weather(weather: Any) -> list[dict[str, str]]:
 def _validate_route(
     route: Any,
     town: str,
-    waypoint_count: int,
+    waypoints: list[ET.Element],
     max_scenarios: int,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     if not isinstance(route, dict):
@@ -264,11 +323,18 @@ def _validate_route(
         scenario_type = scenario.get("type")
         if scenario_type not in SCENARIO_PARAMETERS:
             raise GenerationError(f"Unknown scenario type '{scenario_type}'")
-        waypoint_index = scenario.get("waypoint_index")
-        if isinstance(waypoint_index, bool) or not isinstance(waypoint_index, int):
-            raise GenerationError(f"Scenario {index} waypoint_index must be an integer")
-        if not 0 <= waypoint_index < waypoint_count:
-            raise GenerationError(f"Scenario {index} waypoint_index is outside the template route")
+        trigger = scenario.get("trigger_point")
+        if not isinstance(trigger, dict):
+            raise GenerationError(f"Scenario {index} must contain trigger_point {{x,y,z,yaw}}")
+        try:
+            point = {name: float(trigger[name]) for name in ("x", "y", "z", "yaw")}
+        except (KeyError, TypeError, ValueError) as error:
+            raise GenerationError(
+                f"Scenario {index} trigger_point must contain numeric x, y, z, and yaw"
+            ) from error
+        errors = _route_trigger_errors(point, waypoints)
+        if errors:
+            raise GenerationError(f"Scenario {index} trigger_point invalid: {'; '.join(errors)}")
         parameters = scenario.get("parameters", {})
         if not isinstance(parameters, dict):
             raise GenerationError(f"Scenario {index} parameters must be an object")
@@ -279,12 +345,9 @@ def _validate_route(
             raise GenerationError(f"{scenario_type} has unknown parameters: {sorted(unknown)}")
         if missing:
             raise GenerationError(f"{scenario_type} is missing parameters: {sorted(missing)}")
-        yaw = scenario.get("yaw", 0)
-        _number(yaw, f"scenario {index}.yaw")
         validated_scenarios.append({
             "type": scenario_type,
-            "waypoint_index": waypoint_index,
-            "yaw": yaw,
+            "trigger_point": point,
             "parameters": parameters,
         })
     return _validate_weather(route.get("weather")), validated_scenarios
@@ -307,6 +370,44 @@ def _copy_template(root: ET.Element, route_id: str) -> ET.Element:
     raise GenerationError(f"Template route id '{route_id}' was not found")
 
 
+def _angle_difference(first: float, second: float) -> float:
+    return abs((first - second + 180.0) % 360.0 - 180.0)
+
+
+def _route_trigger_errors(point: dict[str, float], waypoints: list[ET.Element]) -> list[str]:
+    """Approximate CARLA's interpolated-route position and yaw check."""
+    if len(waypoints) < 2:
+        return ["template route needs at least two waypoints"]
+    best: tuple[float, float, float] | None = None
+    for first, second in zip(waypoints, waypoints[1:]):
+        x1, y1, z1 = (float(first.attrib[name]) for name in ("x", "y", "z"))
+        x2, y2, z2 = (float(second.attrib[name]) for name in ("x", "y", "z"))
+        dx, dy = x2 - x1, y2 - y1
+        length_squared = dx * dx + dy * dy
+        if length_squared == 0:
+            continue
+        ratio = max(0.0, min(1.0, ((point["x"] - x1) * dx + (point["y"] - y1) * dy) / length_squared))
+        closest_x, closest_y = x1 + ratio * dx, y1 + ratio * dy
+        closest_z = z1 + ratio * (z2 - z1)
+        horizontal = math.hypot(point["x"] - closest_x, point["y"] - closest_y)
+        vertical = abs(point["z"] - closest_z)
+        heading = math.degrees(math.atan2(dy, dx)) % 360.0
+        candidate = (horizontal, vertical, _angle_difference(point["yaw"], heading))
+        if best is None or horizontal + vertical < best[0] + best[1]:
+            best = candidate
+    if best is None:
+        return ["template route contains no usable segments"]
+    horizontal, vertical, yaw_error = best
+    errors = []
+    if horizontal >= 2.0:
+        errors.append(f"horizontal distance {horizontal:.2f}m >= 2m")
+    if vertical >= 2.0:
+        errors.append(f"vertical distance {vertical:.2f}m >= 2m")
+    if yaw_error >= 10.0:
+        errors.append(f"yaw error {yaw_error:.2f}deg >= 10deg")
+    return errors
+
+
 def _append_generated_routes(
     root: ET.Element,
     template: ET.Element,
@@ -324,7 +425,6 @@ def _append_generated_routes(
             ET.SubElement(weather_element, "weather", attributes)
         route.append(ET.fromstring(ET.tostring(template_waypoints, encoding="unicode")))
         scenarios_element = ET.SubElement(route, "scenarios")
-        points = list(template_waypoints)
         for number, scenario in enumerate(scenarios, start=1):
             scenario_type = scenario["type"]
             scenario_element = ET.SubElement(
@@ -332,11 +432,9 @@ def _append_generated_routes(
                 "scenario",
                 {"name": f"{scenario_type}_{starting_id + offset}_{number}", "type": scenario_type},
             )
-            point = points[scenario["waypoint_index"]]
             trigger = ET.SubElement(scenario_element, "trigger_point")
-            for name in ("x", "y", "z"):
-                trigger.set(name, point.attrib[name])
-            trigger.set("yaw", str(scenario["yaw"]))
+            for name, value in scenario["trigger_point"].items():
+                trigger.set(name, str(value))
             for name, value in scenario["parameters"].items():
                 _parameter_element(scenario_element, name, value)
 
@@ -371,6 +469,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("SCENARIO_LLM_MODEL", DEFAULT_MODEL))
     parser.add_argument("--api-key", default=os.getenv("SCENARIO_LLM_API_KEY"))
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--max-requests", type=int, default=3,
+                        help="Maximum model requests, including validation retries")
     parser.add_argument("--no-backup", action="store_true")
     parser.add_argument("--yes", action="store_true", help="Skip the final confirmation")
     return parser.parse_args()
@@ -378,8 +478,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.count < 1 or args.max_scenarios < 0:
-        raise GenerationError("--count must be positive and --max-scenarios cannot be negative")
+    if args.count < 1 or args.max_scenarios < 0 or args.max_requests < 1:
+        raise GenerationError(
+            "--count and --max-requests must be positive; --max-scenarios cannot be negative"
+        )
     description = args.description or input("Describe the CARLA scenario(s): ").strip()
     if not description:
         raise GenerationError("A non-empty scenario description is required")
@@ -393,23 +495,50 @@ def main() -> int:
         waypoints = template.find("waypoints")
         if not town or waypoints is None:
             raise GenerationError("Template route must contain a town and waypoints")
-        prompt = (
+        base_prompt = (
             f"Template town: {town}\n"
             f"Template waypoint count: {len(list(waypoints))}\n"
+            f"Template route waypoints (x,y,z):\n"
+            f"{json.dumps([{key: point.attrib[key] for key in ('x', 'y', 'z')} for point in list(waypoints)], separators=(',', ':'))}\n"
             f"Requested route variants: {args.count}\n"
             f"Maximum scenarios per route: {args.max_scenarios}\n"
             f"Allowed scenario parameter schema: {json.dumps(SCENARIO_PARAMETERS, sort_keys=True)}\n"
             f"Allowed weather attributes: {json.dumps(sorted(WEATHER_ATTRIBUTES))}\n"
             f"User description: {description}"
         )
-        response = call_model(prompt, args.endpoint, args.model, args.api_key, args.timeout)
-        routes = response.get("routes")
-        if not isinstance(routes, list) or len(routes) != args.count:
-            raise GenerationError(f"Model must return exactly {args.count} route objects")
-        generated = [
-            _validate_route(route, town, len(list(waypoints)), args.max_scenarios)
-            for route in routes
-        ]
+        feedback = ""
+        generated = None
+        for attempt in range(1, args.max_requests + 1):
+            try:
+                response = call_model(
+                    base_prompt + feedback,
+                    args.endpoint,
+                    args.model,
+                    args.api_key,
+                    args.timeout,
+                )
+                routes = response.get("routes")
+                if not isinstance(routes, list) or len(routes) != args.count:
+                    raise GenerationError(f"Model must return exactly {args.count} route objects")
+                generated = [
+                    _validate_route(route, town, list(waypoints), args.max_scenarios)
+                    for route in routes
+                ]
+                break
+            except GenerationError as error:
+                if attempt == args.max_requests:
+                    raise GenerationError(
+                        f"Model output failed validation after {args.max_requests} requests: {error}"
+                    ) from error
+                feedback = (
+                    "\n\nVALIDATION RETRY\n"
+                    f"Attempt {attempt} failed with: {error}\n"
+                    "Return the complete corrected JSON object. Correct every "
+                    "listed trigger_point; do not merely explain the fix.\n"
+                )
+                print(f"Attempt {attempt} rejected: {error}; retrying.")
+        if generated is None:
+            raise GenerationError("No valid route was generated")
         next_id = _next_route_id(root)
         print(f"Generated {len(generated)} route(s) for {town} using template {args.template_route}.")
         for index, (_, scenarios) in enumerate(generated):

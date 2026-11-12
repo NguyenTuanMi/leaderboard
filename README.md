@@ -46,5 +46,8 @@ requests do not get sent to an external proxy. Remote model endpoints still
 use the server's normal proxy environment.
 
 The generator rejects unknown scenario types, missing parameters, invalid
-weather, invalid waypoint indices, and malformed model responses before
-modifying the XML. It uses only Python's standard library.
+weather, invalid trigger positions/headings, and malformed model responses
+before modifying the XML. Trigger points are generated explicitly by the
+model and checked against the template route geometry. Failed generations are
+sent back to the model with validation feedback; `--max-requests` limits the
+number of attempts. It uses only Python's standard library.
