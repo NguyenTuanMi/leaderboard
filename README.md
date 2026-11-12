@@ -19,14 +19,27 @@ More information can be found [here](https://leaderboard.carla.org/)
 
 `scenario_generator/scenario_generator.py` can turn a natural-language
 description into one or more validated route entries in
-`data/routes_devtest.xml`. It copies waypoints from an existing route, so the
-local or remote model does not have to invent map coordinates:
+`data/routes_devtest.xml`. It copies waypoints from an existing route and needs
+a running CARLA server (same Python environment as `run_leaderboard.sh`, so
+`carla`, `scenario_runner` and this repo are importable). The generator loads the
+route's town and builds the same dense 1 m route that Leaderboard drives. The
+model only picks a `route_index` for each scenario; the trigger point (x, y, z,
+yaw) is taken from that route point and checked with Leaderboard's own
+`RouteParser.is_scenario_at_route`. Validation errors (bad index, scenarios too
+close along the route, invalid parameter values) are sent back to the model for a
+retry:
 
 ```bash
 python3 scenario_generator/scenario_generator.py \
   --template-route 0 \
-  --description "Add a pedestrian crossing and a control-loss event near the middle of the route"
+  --description "Add a pedestrian crossing and a control-loss event near the middle of the route" \
+  --carla-host localhost --carla-port 2000
 ```
+
+Use `--min-spacing` (metres between triggers, default 10), `--sample-step`
+(metres between route points shown to the model, default 20) and `--max-completion-tokens`
+to tune it. Do not point it at a CARLA server that is running an evaluation, since
+the town is reloaded.
 
 The command previews the generated routes and requires `YES` before writing.
 It creates a timestamped backup by default. Use `--count 2` for two variants,

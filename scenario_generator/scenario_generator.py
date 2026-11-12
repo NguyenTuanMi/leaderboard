@@ -18,6 +18,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,21 @@ DEFAULT_OUTPUT = "data/routes_devtest.xml"
 DEFAULT_ENDPOINT = "http://localhost:9000/v1"
 DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 MAX_SCENARIOS = 10
+DEFAULT_CARLA_HOST = "localhost"
+DEFAULT_CARLA_PORT = 2000
+DEFAULT_MAX_COMPLETION_TOKENS = 4096
+DEFAULT_MIN_SPACING = 10.0      # metres along the route between two triggers
+DEFAULT_SAMPLE_STEP = 20.0      # metres between route points listed in the prompt
+# Same thresholds as leaderboard/utils/route_parser.py
+DIST_THRESHOLD = 2.0
+ANGLE_THRESHOLD = 10.0
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+PARAMETER_ENUMS = {"direction": {"left", "right"}}
+POSITIVE_PARAMETERS = {
+    "distance", "speed", "flow_speed", "frequency", "bicycle_speed",
+    "bicycle_drive_distance", "front_vehicle_distance", "behind_vehicle_distance",
+}
 
 SCENARIO_PARAMETERS: dict[str, tuple[str, ...]] = {
     "SignalizedJunctionLeftTurn": ("flow_speed", "source_dist_interval"),
@@ -84,8 +100,13 @@ WEATHER_ATTRIBUTES = {
 }
 
 SYSTEM_PROMPT = """You generate CARLA leaderboard route XML data.
-The caller supplies an existing route as a geometry template. Never invent
-waypoint coordinates. Return only one JSON object with this shape:
+The caller supplies the dense route that Leaderboard will actually drive: a list
+of route points, each with an integer index, x, y, z, yaw and the distance
+travelled along the route in metres (s). The list is downsampled, but every
+integer index from 0 to the last index is a valid choice. Never invent
+coordinates: you choose WHERE a scenario happens by giving a route_index, and the
+caller derives the exact trigger_point (x, y, z, yaw) from that route point.
+Return only one JSON object with this shape:
 {
   "routes": [
     {
@@ -96,28 +117,30 @@ waypoint coordinates. Return only one JSON object with this shape:
       "scenarios": [
         {
           "type": "ControlLoss",
-          "trigger_point": {"x": 119.7, "y": 6100.9, "z": 358, "yaw": 179},
+          "route_index": 120,
           "parameters": {}
         }
       ]
     }
   ]
 }
-Use only scenario types from the supplied allowlist. Every scenario MUST
-contain an explicit trigger_point with numeric x, y, z, and yaw. Generate new
-positions; do not copy an existing scenario merely because it has the same
-type. Multiple scenarios of the same type must use different positions.
-Place every trigger on the supplied route geometry and set yaw to the road
-heading at that position. Do not use trigger_reference, waypoint_index, or
-yaw_offset.
-Parameters must use the exact names from the scenario schema; intervals are
-objects with numeric "from" and "to". Generate no more than the requested
-route and scenario counts.
+Rules:
+1. Use only scenario types from the supplied allowlist and the exact parameter
+   names from the scenario schema. Intervals are objects with numeric "from"
+   and "to". Generate no more than the requested route and scenario counts.
+2. Every scenario MUST contain an integer route_index within the valid range.
+   Do not output x, y, z, yaw, trigger_point, trigger_reference, waypoint_index
+   or yaw_offset.
+3. Scenarios on one route must be far apart along the route (at least the
+   supplied minimum spacing in metres, measured with s) and must not repeat
+   the same route_index. List them in increasing route_index order.
+4. If validation feedback is supplied, correct every listed scenario and
+   return the complete corrected JSON object.
 
-Here is a real CARLA routes_devtest.xml-style example. Learn the relationship
-between route waypoints, scenario trigger_point values, scenario type names,
-and scenario parameters from this example. This is an example of XML input,
-not output: your response must still be JSON.
+For reference only, this is how a finished Leaderboard route looks in XML. The
+caller writes the XML; your response must still be JSON in the shape above.
+Each scenario's trigger_point is a point of the route, and the scenario's
+parameters are child elements:
 
 <route id="0" town="Town12">
   <weathers>
@@ -129,9 +152,6 @@ not output: your response must still be JSON.
   <waypoints>
     <position x="983.5" y="5382.2" z="371"/>
     <position x="824.2" y="5575.3" z="371"/>
-    <position x="605.5" y="5575.5" z="370"/>
-    <position x="497.5" y="5718.3" z="368"/>
-    <position x="516.3" y="5897.4" z="364"/>
   </waypoints>
   <scenarios>
     <scenario name="ParkingExit_1" type="ParkingExit">
@@ -140,38 +160,144 @@ not output: your response must still be JSON.
       <front_vehicle_distance value="9"/>
       <behind_vehicle_distance value="9"/>
     </scenario>
-    <scenario name="SignalizedJunctionLeftTurn_1"
-              type="SignalizedJunctionLeftTurn">
-      <trigger_point x="571.1" y="5579.4" z="370" yaw="180"/>
-      <flow_speed value="16.6"/>
-      <source_dist_interval from="30" to="65"/>
-    </scenario>
     <scenario name="Accident_1" type="Accident">
       <trigger_point x="427.2" y="6086.8" z="359" yaw="144"/>
     </scenario>
-    <scenario name="ControlLoss_1" type="ControlLoss">
-      <trigger_point x="119.7" y="6100.9" z="358" yaw="179"/>
-    </scenario>
   </scenarios>
 </route>
-
-Important example rules:
-1. A scenario trigger_point is not arbitrary. It must lie on the route and
-   its yaw must follow the road. CARLA rejects it when it is more than about
-   2 meters from the interpolated route or its yaw differs by more than about
-   10 degrees.
-2. The generator validates each returned trigger against the supplied route
-   polyline using CARLA's thresholds: horizontal distance < 2 meters, vertical
-   distance < 2 meters, and yaw difference < 10 degrees.
-3. Do not copy the example's absolute coordinates into a different town or
-   route. Use the runtime template waypoints supplied by the caller.
-4. If validation feedback is supplied, correct every listed scenario and
-   return the complete corrected JSON object.
 """
 
 
 class GenerationError(ValueError):
     """Raised when model output cannot be safely converted to route XML."""
+
+
+def _angle_difference(first: float, second: float) -> float:
+    return abs((first - second + 180.0) % 360.0 - 180.0)
+
+
+@dataclass(frozen=True)
+class RoutePoint:
+    """One point of the dense route Leaderboard drives (1 m hop)."""
+    x: float
+    y: float
+    z: float
+    yaw: float
+    distance: float  # metres travelled along the route
+
+    def trigger(self) -> dict[str, float]:
+        return {"x": self.x, "y": self.y, "z": self.z, "yaw": self.yaw}
+
+
+class DenseRoute:
+    """The interpolated route, plus the real Leaderboard trigger check.
+
+    ``carla_route`` is the raw ``[(carla.Transform, RoadOption)]`` list returned
+    by ``interpolate_trajectory``. When present, ``RouteParser.is_scenario_at_route``
+    is also called on it so the generator and the evaluator cannot disagree.
+    """
+
+    def __init__(self, points: list[RoutePoint], carla_route: Any = None) -> None:
+        if not points:
+            raise GenerationError("The interpolated route is empty")
+        self.points = points
+        self.carla_route = carla_route
+
+    def __len__(self) -> int:
+        return len(self.points)
+
+    @classmethod
+    def from_poses(cls, poses: list[tuple[float, float, float, float]], carla_route: Any = None) -> "DenseRoute":
+        points, travelled = [], 0.0
+        for number, (x, y, z, yaw) in enumerate(poses):
+            if number:
+                previous = points[-1]
+                travelled += math.hypot(x - previous.x, y - previous.y)
+            points.append(RoutePoint(x, y, z, yaw, travelled))
+        return cls(points, carla_route)
+
+    def sample_indices(self, step: float) -> list[int]:
+        indices, last_distance = [0], 0.0
+        for number, point in enumerate(self.points[1:], start=1):
+            if point.distance - last_distance >= step:
+                indices.append(number)
+                last_distance = point.distance
+        if indices[-1] != len(self.points) - 1:
+            indices.append(len(self.points) - 1)
+        return indices
+
+    def describe(self, step: float) -> str:
+        lines = ["index x y z yaw s"]
+        for number in self.sample_indices(step):
+            p = self.points[number]
+            lines.append(f"{number} {p.x:.1f} {p.y:.1f} {p.z:.1f} {p.yaw:.0f} {p.distance:.0f}")
+        return "\n".join(lines)
+
+    def trigger_errors(self, trigger: dict[str, float]) -> list[str]:
+        """Mirror of RouteParser.is_scenario_at_route (with abs() on dz)."""
+        nearest, nearest_distance = None, math.inf
+        for number, p in enumerate(self.points):
+            horizontal = math.hypot(trigger["x"] - p.x, trigger["y"] - p.y)
+            vertical = abs(trigger["z"] - p.z)
+            yaw_error = _angle_difference(trigger["yaw"], p.yaw)
+            if horizontal < DIST_THRESHOLD and vertical < DIST_THRESHOLD and yaw_error < ANGLE_THRESHOLD:
+                return self._carla_check(trigger)
+            if horizontal < nearest_distance:
+                nearest, nearest_distance = (number, horizontal, vertical, yaw_error), horizontal
+        number, horizontal, vertical, yaw_error = nearest
+        return [
+            f"nearest route point is index {number} (dxy={horizontal:.2f}m, "
+            f"dz={vertical:.2f}m, dyaw={yaw_error:.1f}deg); limits are "
+            f"{DIST_THRESHOLD:g}m, {DIST_THRESHOLD:g}m, {ANGLE_THRESHOLD:g}deg"
+        ]
+
+    def _carla_check(self, trigger: dict[str, float]) -> list[str]:
+        if self.carla_route is None:
+            return []
+        import carla
+        from leaderboard.utils.route_parser import RouteParser
+        transform = carla.Transform(
+            carla.Location(trigger["x"], trigger["y"], trigger["z"]),
+            carla.Rotation(roll=0.0, pitch=0.0, yaw=trigger["yaw"]),
+        )
+        if RouteParser.is_scenario_at_route(transform, self.carla_route):
+            return []
+        return ["rejected by Leaderboard RouteParser.is_scenario_at_route"]
+
+
+def build_carla_route(
+    waypoints: list[ET.Element], town: str, host: str, port: int, timeout: float
+) -> DenseRoute:
+    """Interpolate the template exactly as Leaderboard does, using a live CARLA server."""
+    for path in (str(REPO_ROOT),):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    try:
+        import carla
+        from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+        from leaderboard.utils.route_manipulation import interpolate_trajectory
+    except ImportError as error:
+        raise GenerationError(
+            "CARLA validation needs the carla Python API, scenario_runner and the "
+            f"leaderboard package on PYTHONPATH (same environment as run_leaderboard.sh): {error}"
+        ) from error
+    try:
+        client = carla.Client(host, port)
+        client.set_timeout(timeout)
+        world = client.load_world(town)
+        CarlaDataProvider.set_client(client)
+        CarlaDataProvider.set_world(world)
+        keypoints = [
+            carla.Location(*(float(point.attrib[name]) for name in ("x", "y", "z")))
+            for point in waypoints
+        ]
+        _, route = interpolate_trajectory(keypoints)
+    except RuntimeError as error:
+        raise GenerationError(f"CARLA server {host}:{port} failed while building the route: {error}") from error
+    poses = [
+        (t.location.x, t.location.y, t.location.z, t.rotation.yaw) for t, _ in route
+    ]
+    return DenseRoute.from_poses(poses, carla_route=route)
 
 
 def _endpoint_url(base_url: str) -> str:
@@ -198,6 +324,7 @@ def call_model(
     model: str,
     api_key: str | None,
     timeout: float,
+    max_completion_tokens: int = DEFAULT_MAX_COMPLETION_TOKENS,
 ) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -205,8 +332,7 @@ def call_model(
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0.2,
-        "max_tokens": 1200,
+        "max_completion_tokens": max_completion_tokens,
         "response_format": {"type": "json_object"},
     }
     request = urllib.request.Request(
@@ -303,12 +429,37 @@ def _validate_weather(weather: Any) -> list[dict[str, str]]:
     return validated
 
 
+def _validate_parameters(scenario_type: str, parameters: dict[str, Any]) -> None:
+    allowed = set(SCENARIO_PARAMETERS[scenario_type])
+    unknown = set(parameters) - allowed
+    missing = allowed - set(parameters)
+    if unknown:
+        raise GenerationError(f"{scenario_type} has unknown parameters: {sorted(unknown)}")
+    if missing:
+        raise GenerationError(f"{scenario_type} is missing parameters: {sorted(missing)}")
+    for name, value in parameters.items():
+        if name in PARAMETER_ENUMS and value not in PARAMETER_ENUMS[name]:
+            raise GenerationError(
+                f"{scenario_type}.{name} must be one of {sorted(PARAMETER_ENUMS[name])}, got {value!r}"
+            )
+        if name in POSITIVE_PARAMETERS and (
+            isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+        ):
+            raise GenerationError(f"{scenario_type}.{name} must be a positive number, got {value!r}")
+        if isinstance(value, dict) and set(value) == {"from", "to"}:
+            low, high = value["from"], value["to"]
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (low, high)) or low > high:
+                raise GenerationError(f"{scenario_type}.{name} needs numeric from <= to")
+
+
 def _validate_route(
     route: Any,
     town: str,
-    waypoints: list[ET.Element],
+    dense_route: DenseRoute,
     max_scenarios: int,
+    min_spacing: float = DEFAULT_MIN_SPACING,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    """Validate one model route. Triggers are derived from the chosen route index."""
     if not isinstance(route, dict):
         raise GenerationError("Each generated route must be an object")
     if route.get("town") not in (None, town):
@@ -323,33 +474,45 @@ def _validate_route(
         scenario_type = scenario.get("type")
         if scenario_type not in SCENARIO_PARAMETERS:
             raise GenerationError(f"Unknown scenario type '{scenario_type}'")
-        trigger = scenario.get("trigger_point")
-        if not isinstance(trigger, dict):
-            raise GenerationError(f"Scenario {index} must contain trigger_point {{x,y,z,yaw}}")
-        try:
-            point = {name: float(trigger[name]) for name in ("x", "y", "z", "yaw")}
-        except (KeyError, TypeError, ValueError) as error:
+        route_index = scenario.get("route_index")
+        if isinstance(route_index, bool) or not isinstance(route_index, int):
             raise GenerationError(
-                f"Scenario {index} trigger_point must contain numeric x, y, z, and yaw"
-            ) from error
-        errors = _route_trigger_errors(point, waypoints)
+                f"Scenario {index} ({scenario_type}) must contain an integer route_index "
+                f"between 0 and {len(dense_route) - 1}"
+            )
+        if not 0 <= route_index < len(dense_route):
+            raise GenerationError(
+                f"Scenario {index} ({scenario_type}) route_index {route_index} is outside "
+                f"the valid range 0..{len(dense_route) - 1}"
+            )
+        point = dense_route.points[route_index]
+        # Safety net: run the real Leaderboard acceptance check on the derived trigger.
+        errors = dense_route.trigger_errors(point.trigger())
         if errors:
-            raise GenerationError(f"Scenario {index} trigger_point invalid: {'; '.join(errors)}")
+            raise GenerationError(
+                f"Scenario {index} ({scenario_type}) route_index {route_index} gives an "
+                f"invalid trigger_point: {'; '.join(errors)}"
+            )
         parameters = scenario.get("parameters", {})
         if not isinstance(parameters, dict):
             raise GenerationError(f"Scenario {index} parameters must be an object")
-        allowed = set(SCENARIO_PARAMETERS[scenario_type])
-        unknown = set(parameters) - allowed
-        missing = allowed - set(parameters)
-        if unknown:
-            raise GenerationError(f"{scenario_type} has unknown parameters: {sorted(unknown)}")
-        if missing:
-            raise GenerationError(f"{scenario_type} is missing parameters: {sorted(missing)}")
+        _validate_parameters(scenario_type, parameters)
+        for other_index, other in enumerate(validated_scenarios):
+            gap = abs(point.distance - dense_route.points[other["route_index"]].distance)
+            if gap < min_spacing:
+                raise GenerationError(
+                    f"Scenario {index} ({scenario_type}, route_index {route_index}) is only "
+                    f"{gap:.1f}m along the route from scenario {other_index} "
+                    f"({other['type']}, route_index {other['route_index']}); keep at least "
+                    f"{min_spacing:g}m apart and use different route_index values"
+                )
         validated_scenarios.append({
             "type": scenario_type,
-            "trigger_point": point,
+            "route_index": route_index,
+            "trigger_point": point.trigger(),
             "parameters": parameters,
         })
+    validated_scenarios.sort(key=lambda item: item["route_index"])
     return _validate_weather(route.get("weather")), validated_scenarios
 
 
@@ -368,44 +531,6 @@ def _copy_template(root: ET.Element, route_id: str) -> ET.Element:
         if route.attrib.get("id") == route_id:
             return route
     raise GenerationError(f"Template route id '{route_id}' was not found")
-
-
-def _angle_difference(first: float, second: float) -> float:
-    return abs((first - second + 180.0) % 360.0 - 180.0)
-
-
-def _route_trigger_errors(point: dict[str, float], waypoints: list[ET.Element]) -> list[str]:
-    """Approximate CARLA's interpolated-route position and yaw check."""
-    if len(waypoints) < 2:
-        return ["template route needs at least two waypoints"]
-    best: tuple[float, float, float] | None = None
-    for first, second in zip(waypoints, waypoints[1:]):
-        x1, y1, z1 = (float(first.attrib[name]) for name in ("x", "y", "z"))
-        x2, y2, z2 = (float(second.attrib[name]) for name in ("x", "y", "z"))
-        dx, dy = x2 - x1, y2 - y1
-        length_squared = dx * dx + dy * dy
-        if length_squared == 0:
-            continue
-        ratio = max(0.0, min(1.0, ((point["x"] - x1) * dx + (point["y"] - y1) * dy) / length_squared))
-        closest_x, closest_y = x1 + ratio * dx, y1 + ratio * dy
-        closest_z = z1 + ratio * (z2 - z1)
-        horizontal = math.hypot(point["x"] - closest_x, point["y"] - closest_y)
-        vertical = abs(point["z"] - closest_z)
-        heading = math.degrees(math.atan2(dy, dx)) % 360.0
-        candidate = (horizontal, vertical, _angle_difference(point["yaw"], heading))
-        if best is None or horizontal + vertical < best[0] + best[1]:
-            best = candidate
-    if best is None:
-        return ["template route contains no usable segments"]
-    horizontal, vertical, yaw_error = best
-    errors = []
-    if horizontal >= 2.0:
-        errors.append(f"horizontal distance {horizontal:.2f}m >= 2m")
-    if vertical >= 2.0:
-        errors.append(f"vertical distance {vertical:.2f}m >= 2m")
-    if yaw_error >= 10.0:
-        errors.append(f"yaw error {yaw_error:.2f}deg >= 10deg")
-    return errors
 
 
 def _append_generated_routes(
@@ -469,6 +594,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default=os.getenv("SCENARIO_LLM_MODEL", DEFAULT_MODEL))
     parser.add_argument("--api-key", default=os.getenv("SCENARIO_LLM_API_KEY"))
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--max-completion-tokens", type=int, default=DEFAULT_MAX_COMPLETION_TOKENS)
+    parser.add_argument("--carla-host", default=os.getenv("CARLA_HOST", DEFAULT_CARLA_HOST))
+    parser.add_argument("--carla-port", type=int, default=int(os.getenv("CARLA_PORT", DEFAULT_CARLA_PORT)))
+    parser.add_argument("--carla-timeout", type=float, default=120.0,
+                        help="Seconds to wait for CARLA (loading a large town can be slow)")
+    parser.add_argument("--min-spacing", type=float, default=DEFAULT_MIN_SPACING,
+                        help="Minimum metres along the route between two scenario triggers")
+    parser.add_argument("--sample-step", type=float, default=DEFAULT_SAMPLE_STEP,
+                        help="Metres between route points listed to the model")
     parser.add_argument("--max-requests", type=int, default=3,
                         help="Maximum model requests, including validation retries")
     parser.add_argument("--no-backup", action="store_true")
@@ -495,11 +629,15 @@ def main() -> int:
         waypoints = template.find("waypoints")
         if not town or waypoints is None:
             raise GenerationError("Template route must contain a town and waypoints")
+        dense_route = build_carla_route(
+            list(waypoints), town, args.carla_host, args.carla_port, args.carla_timeout
+        )
         base_prompt = (
             f"Template town: {town}\n"
-            f"Template waypoint count: {len(list(waypoints))}\n"
-            f"Template route waypoints (x,y,z):\n"
-            f"{json.dumps([{key: point.attrib[key] for key in ('x', 'y', 'z')} for point in list(waypoints)], separators=(',', ':'))}\n"
+            f"Route length: {dense_route.points[-1].distance:.0f} m; valid route_index values: "
+            f"0..{len(dense_route) - 1} (listed below every ~{args.sample_step:g} m)\n"
+            f"Minimum spacing between scenarios on one route: {args.min_spacing:g} m\n"
+            f"Route points:\n{dense_route.describe(args.sample_step)}\n"
             f"Requested route variants: {args.count}\n"
             f"Maximum scenarios per route: {args.max_scenarios}\n"
             f"Allowed scenario parameter schema: {json.dumps(SCENARIO_PARAMETERS, sort_keys=True)}\n"
@@ -516,12 +654,13 @@ def main() -> int:
                     args.model,
                     args.api_key,
                     args.timeout,
+                    args.max_completion_tokens,
                 )
                 routes = response.get("routes")
                 if not isinstance(routes, list) or len(routes) != args.count:
                     raise GenerationError(f"Model must return exactly {args.count} route objects")
                 generated = [
-                    _validate_route(route, town, list(waypoints), args.max_scenarios)
+                    _validate_route(route, town, dense_route, args.max_scenarios, args.min_spacing)
                     for route in routes
                 ]
                 break
