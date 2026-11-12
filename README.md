@@ -36,6 +36,15 @@ python3 scenario_generator/scenario_generator.py \
   --carla-host localhost --carla-port 2000
 ```
 
+Leave out `--description` to get an interactive prompt (`scenario> `) that reuses the
+same CARLA route for every request, so you only wait for the town to load once.
+Type a description and press Enter, `/count N` to change the number of variants,
+`/quit` to leave. Errors are shown and the session continues.
+
+To use the [`llm`](https://github.com/simonw/llm) library for the model call (its
+stored keys, aliases and plugins for local models), run `pip install llm`, then
+`llm keys set openai` and add `--backend llm --model gpt-4o`.
+
 Use `--min-spacing` (metres between triggers, default 10), `--sample-step`
 (metres between route points shown to the model, default 20) and `--max-completion-tokens`
 to tune it. Do not point it at a CARLA server that is running an evaluation, since

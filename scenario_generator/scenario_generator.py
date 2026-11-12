@@ -359,6 +359,10 @@ def call_model(
         content = response_data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as error:
         raise GenerationError("Model response has no choices[0].message.content") from error
+    return _parse_model_json(content)
+
+
+def _parse_model_json(content: Any) -> dict[str, Any]:
     if not isinstance(content, str):
         raise GenerationError("Model message content must be a JSON string")
     content = content.strip()
@@ -371,6 +375,30 @@ def call_model(
     if not isinstance(result, dict):
         raise GenerationError("Model JSON root must be an object")
     return result
+
+
+def call_model_llm(prompt: str, model_name: str, api_key: str | None) -> dict[str, Any]:
+    """Call a model through Simon Willison's `llm` library (https://github.com/simonw/llm).
+
+    Models, aliases and stored keys (`llm keys set openai`) are shared with the
+    `llm` command line tool; plugins add local and other providers.
+    """
+    try:
+        import llm
+    except ImportError as error:
+        raise GenerationError("The llm backend needs the package: pip install llm") from error
+    try:
+        model = llm.get_model(model_name)
+    except llm.UnknownModelError as error:
+        raise GenerationError(f"llm does not know model '{model_name}' (see `llm models`)") from error
+    if api_key:
+        model.key = api_key
+    options = {"json_object": True} if "json_object" in model.Options.model_fields else {}
+    try:
+        text = model.prompt(prompt, system=SYSTEM_PROMPT, stream=False, options=options).text()
+    except llm.ModelError as error:
+        raise GenerationError(f"llm model call failed: {error}") from error
+    return _parse_model_json(text)
 
 
 def _number(value: Any, label: str) -> str:
@@ -585,13 +613,17 @@ def write_xml(root: ET.Element, output: Path, backup: bool) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--description", help="Natural-language scenario description")
+    parser.add_argument("--description",
+                        help="Natural-language scenario description. Omit it to start an interactive prompt")
+    parser.add_argument("--backend", choices=("http", "llm"), default=os.getenv("SCENARIO_LLM_BACKEND", "http"),
+                        help="http: OpenAI-compatible endpoint; llm: the `llm` library (pip install llm)")
     parser.add_argument("--output", default=os.getenv("SCENARIO_OUTPUT", DEFAULT_OUTPUT))
     parser.add_argument("--template-route", required=True, help="Existing route id used for valid waypoints")
     parser.add_argument("--count", type=int, default=1, help="Number of route variants to append")
     parser.add_argument("--max-scenarios", type=int, default=MAX_SCENARIOS)
     parser.add_argument("--endpoint", default=os.getenv("SCENARIO_LLM_ENDPOINT", DEFAULT_ENDPOINT))
-    parser.add_argument("--model", default=os.getenv("SCENARIO_LLM_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--model", default=os.getenv("SCENARIO_LLM_MODEL", DEFAULT_MODEL),
+                        help="Model name; with --backend llm, any name or alias from `llm models`")
     parser.add_argument("--api-key", default=os.getenv("SCENARIO_LLM_API_KEY"))
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--max-completion-tokens", type=int, default=DEFAULT_MAX_COMPLETION_TOKENS)
@@ -610,16 +642,132 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_prompt(args: argparse.Namespace, town: str, dense_route: DenseRoute, description: str) -> str:
+    return (
+        f"Template town: {town}\n"
+        f"Route length: {dense_route.points[-1].distance:.0f} m; valid route_index values: "
+        f"0..{len(dense_route) - 1} (listed below every ~{args.sample_step:g} m)\n"
+        f"Minimum spacing between scenarios on one route: {args.min_spacing:g} m\n"
+        f"Route points:\n{dense_route.describe(args.sample_step)}\n"
+        f"Requested route variants: {args.count}\n"
+        f"Maximum scenarios per route: {args.max_scenarios}\n"
+        f"Allowed scenario parameter schema: {json.dumps(SCENARIO_PARAMETERS, sort_keys=True)}\n"
+        f"Allowed weather attributes: {json.dumps(sorted(WEATHER_ATTRIBUTES))}\n"
+        f"User description: {description}"
+    )
+
+
+def _ask_model(args: argparse.Namespace, prompt: str) -> dict[str, Any]:
+    if args.backend == "llm":
+        return call_model_llm(prompt, args.model, args.api_key)
+    return call_model(
+        prompt, args.endpoint, args.model, args.api_key, args.timeout, args.max_completion_tokens
+    )
+
+
+def generate_routes(
+    args: argparse.Namespace, description: str, town: str, dense_route: DenseRoute
+) -> list[tuple[list[dict[str, str]], list[dict[str, Any]]]]:
+    """Ask the model and validate, feeding validation errors back until max_requests."""
+    base_prompt = _build_prompt(args, town, dense_route, description)
+    feedback = ""
+    for attempt in range(1, args.max_requests + 1):
+        try:
+            routes = _ask_model(args, base_prompt + feedback).get("routes")
+            if not isinstance(routes, list) or len(routes) != args.count:
+                raise GenerationError(f"Model must return exactly {args.count} route objects")
+            return [
+                _validate_route(route, town, dense_route, args.max_scenarios, args.min_spacing)
+                for route in routes
+            ]
+        except GenerationError as error:
+            if attempt == args.max_requests:
+                raise GenerationError(
+                    f"Model output failed validation after {args.max_requests} requests: {error}"
+                ) from error
+            feedback = (
+                "\n\nVALIDATION RETRY\n"
+                f"Attempt {attempt} failed with: {error}\n"
+                "Return the complete corrected JSON object. Correct every "
+                "listed scenario (use valid route_index values); do not merely explain the fix.\n"
+            )
+            print(f"Attempt {attempt} rejected: {error}; retrying.")
+    raise GenerationError("No valid route was generated")
+
+
+def _confirm_and_write(
+    args: argparse.Namespace,
+    root: ET.Element,
+    template: ET.Element,
+    output: Path,
+    generated: list[tuple[list[dict[str, str]], list[dict[str, Any]]]],
+) -> None:
+    town = template.attrib["town"]
+    next_id = _next_route_id(root)
+    print(f"Generated {len(generated)} route(s) for {town} using template {args.template_route}.")
+    for index, (_, scenarios) in enumerate(generated):
+        print(f"  route {next_id + index}: {len(scenarios)} scenario(s)")
+        for scenario in scenarios:
+            trigger = scenario["trigger_point"]
+            print(f"    {scenario['type']} at route_index {scenario['route_index']} "
+                  f"({trigger['x']:.1f}, {trigger['y']:.1f}, yaw {trigger['yaw']:.0f})")
+    if not args.yes and input("Type YES to append and write the XML: ").strip() != "YES":
+        print("No changes written.")
+        return
+    _append_generated_routes(root, template, generated, next_id)
+    write_xml(root, output, backup=not args.no_backup)
+    print(f"Wrote {output}")
+
+
+INTERACTIVE_HELP = """Type a scenario description and press Enter.
+  /count N   number of route variants per request (now {count})
+  /help      show this help
+  /quit      leave (Ctrl-D also works)"""
+
+
+def interactive_loop(args, root, template, output, town, dense_route) -> None:
+    try:
+        import readline  # noqa: F401  (line editing and history for input())
+    except ImportError:
+        pass
+    print(INTERACTIVE_HELP.format(count=args.count))
+    while True:
+        try:
+            line = input("scenario> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not line:
+            continue
+        if line in ("/quit", "/exit", "quit", "exit"):
+            return
+        if line == "/help":
+            print(INTERACTIVE_HELP.format(count=args.count))
+            continue
+        if line.startswith("/count"):
+            value = line.split()[1:]
+            if len(value) == 1 and value[0].isdigit() and int(value[0]) >= 1:
+                args.count = int(value[0])
+                print(f"count = {args.count}")
+            else:
+                print("Usage: /count N (N >= 1)")
+            continue
+        try:
+            generated = generate_routes(args, line, town, dense_route)
+            _confirm_and_write(args, root, template, output, generated)
+        except GenerationError as error:
+            print(f"ERROR: {error}")  # keep the session alive for the next prompt
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+
+
 def main() -> int:
     args = parse_args()
     if args.count < 1 or args.max_scenarios < 0 or args.max_requests < 1:
         raise GenerationError(
             "--count and --max-requests must be positive; --max-scenarios cannot be negative"
         )
-    description = args.description or input("Describe the CARLA scenario(s): ").strip()
-    if not description:
-        raise GenerationError("A non-empty scenario description is required")
-
+    interactive = not args.description
     output = Path(args.output)
     try:
         tree = ET.parse(output)
@@ -629,65 +777,15 @@ def main() -> int:
         waypoints = template.find("waypoints")
         if not town or waypoints is None:
             raise GenerationError("Template route must contain a town and waypoints")
+        # Built once: loading the town and routing is the slow part.
         dense_route = build_carla_route(
             list(waypoints), town, args.carla_host, args.carla_port, args.carla_timeout
         )
-        base_prompt = (
-            f"Template town: {town}\n"
-            f"Route length: {dense_route.points[-1].distance:.0f} m; valid route_index values: "
-            f"0..{len(dense_route) - 1} (listed below every ~{args.sample_step:g} m)\n"
-            f"Minimum spacing between scenarios on one route: {args.min_spacing:g} m\n"
-            f"Route points:\n{dense_route.describe(args.sample_step)}\n"
-            f"Requested route variants: {args.count}\n"
-            f"Maximum scenarios per route: {args.max_scenarios}\n"
-            f"Allowed scenario parameter schema: {json.dumps(SCENARIO_PARAMETERS, sort_keys=True)}\n"
-            f"Allowed weather attributes: {json.dumps(sorted(WEATHER_ATTRIBUTES))}\n"
-            f"User description: {description}"
-        )
-        feedback = ""
-        generated = None
-        for attempt in range(1, args.max_requests + 1):
-            try:
-                response = call_model(
-                    base_prompt + feedback,
-                    args.endpoint,
-                    args.model,
-                    args.api_key,
-                    args.timeout,
-                    args.max_completion_tokens,
-                )
-                routes = response.get("routes")
-                if not isinstance(routes, list) or len(routes) != args.count:
-                    raise GenerationError(f"Model must return exactly {args.count} route objects")
-                generated = [
-                    _validate_route(route, town, dense_route, args.max_scenarios, args.min_spacing)
-                    for route in routes
-                ]
-                break
-            except GenerationError as error:
-                if attempt == args.max_requests:
-                    raise GenerationError(
-                        f"Model output failed validation after {args.max_requests} requests: {error}"
-                    ) from error
-                feedback = (
-                    "\n\nVALIDATION RETRY\n"
-                    f"Attempt {attempt} failed with: {error}\n"
-                    "Return the complete corrected JSON object. Correct every "
-                    "listed trigger_point; do not merely explain the fix.\n"
-                )
-                print(f"Attempt {attempt} rejected: {error}; retrying.")
-        if generated is None:
-            raise GenerationError("No valid route was generated")
-        next_id = _next_route_id(root)
-        print(f"Generated {len(generated)} route(s) for {town} using template {args.template_route}.")
-        for index, (_, scenarios) in enumerate(generated):
-            print(f"  route {next_id + index}: {len(scenarios)} scenario(s)")
-        if not args.yes and input("Type YES to append and write the XML: ").strip() != "YES":
-            print("No changes written.")
-            return 0
-        _append_generated_routes(root, template, generated, next_id)
-        write_xml(root, output, backup=not args.no_backup)
-        print(f"Wrote {output}")
+        if interactive:
+            interactive_loop(args, root, template, output, town, dense_route)
+        else:
+            generated = generate_routes(args, args.description, town, dense_route)
+            _confirm_and_write(args, root, template, output, generated)
         return 0
     except (ET.ParseError, OSError) as error:
         raise GenerationError(f"Could not read or write {output}: {error}") from error

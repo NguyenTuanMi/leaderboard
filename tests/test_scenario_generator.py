@@ -1,3 +1,4 @@
+import argparse
 import json
 import unittest
 import xml.etree.ElementTree as ET
@@ -7,8 +8,11 @@ from scenario_generator.scenario_generator import (
     DenseRoute,
     GenerationError,
     _append_generated_routes,
+    _parse_model_json,
     _validate_route,
     call_model,
+    generate_routes,
+    interactive_loop,
 )
 
 
@@ -116,6 +120,50 @@ class ScenarioGeneratorTests(unittest.TestCase):
         trigger = route.find("./scenarios/scenario/trigger_point")
         self.assertEqual(route.attrib["id"], "1")
         self.assertEqual((trigger.attrib["x"], trigger.attrib["yaw"]), ("30.0", "0.0"))
+
+    def _args(self, **kwargs):
+        values = dict(backend="llm", model="m", api_key=None, endpoint="", timeout=1,
+                      max_completion_tokens=100, count=1, max_scenarios=10, min_spacing=10.0,
+                      sample_step=20.0, max_requests=3, yes=True, no_backup=True,
+                      template_route="0")
+        values.update(kwargs)
+        return argparse.Namespace(**values)
+
+    def test_generate_routes_retries_with_feedback(self):
+        bad = {"routes": [{"weather": [{"route_percentage": 0}],
+                           "scenarios": [{"type": "ControlLoss", "route_index": 999, "parameters": {}}]}]}
+        good = {"routes": [{"weather": [{"route_percentage": 0}],
+                            "scenarios": [{"type": "ControlLoss", "route_index": 5, "parameters": {}}]}]}
+        prompts = []
+
+        def fake(args, prompt):
+            prompts.append(prompt)
+            return bad if len(prompts) == 1 else good
+
+        with patch("scenario_generator.scenario_generator._ask_model", side_effect=fake):
+            result = generate_routes(self._args(), "x", "Town12", self._route())
+        self.assertEqual(result[0][1][0]["route_index"], 5)
+        self.assertIn("VALIDATION RETRY", prompts[1])
+        self.assertIn("999", prompts[1])
+
+    def test_interactive_loop_survives_errors_and_writes(self):
+        root = ET.fromstring(
+            "<routes><route id='0' town='Town12'><weathers/>"
+            "<waypoints><position x='1' y='2' z='3'/></waypoints><scenarios/></route></routes>"
+        )
+        good = {"routes": [{"weather": [{"route_percentage": 0}],
+                            "scenarios": [{"type": "ControlLoss", "route_index": 5, "parameters": {}}]}]}
+        replies = [{"routes": []}, good]
+        args = self._args(max_requests=1)
+        with patch("builtins.input", side_effect=["bad prompt", "/count 1", "good prompt", "/quit"]), \
+             patch("scenario_generator.scenario_generator._ask_model", side_effect=replies), \
+             patch("scenario_generator.scenario_generator.write_xml") as write:
+            interactive_loop(args, root, root.find("route"), None, "Town12", self._route())
+        self.assertEqual(len(root.findall("route")), 2)
+        write.assert_called_once()
+
+    def test_parse_model_json_strips_code_fences(self):
+        self.assertEqual(_parse_model_json('```json\n{"a": 1}\n```'), {"a": 1})
 
 if __name__ == "__main__":
     unittest.main()
