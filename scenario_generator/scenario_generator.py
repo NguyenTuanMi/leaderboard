@@ -20,11 +20,12 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 DEFAULT_OUTPUT = "data/routes_devtest.xml"
-DEFAULT_ENDPOINT = "http://localhost:8000/v1"
-DEFAULT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_ENDPOINT = "http://localhost:9000/v1"
+DEFAULT_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
 MAX_SCENARIOS = 10
 
 SCENARIO_PARAMETERS: dict[str, tuple[str, ...]] = {
@@ -119,6 +120,19 @@ def _endpoint_url(base_url: str) -> str:
     return base if base.endswith("/chat/completions") else f"{base}/chat/completions"
 
 
+def _open_model_request(request: urllib.request.Request, timeout: float):
+    """Open local model requests without inherited HTTP(S) proxy settings.
+
+    Remote endpoints retain the environment proxy policy. This mirrors the
+    networking behavior used by the supplied OpenAI/httpx client.
+    """
+    host = urlparse(request.full_url).hostname
+    if host in ("localhost", "127.0.0.1", "::1"):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return opener.open(request, timeout=timeout)
+    return urllib.request.urlopen(request, timeout=timeout)
+
+
 def call_model(
     prompt: str,
     endpoint: str,
@@ -133,6 +147,7 @@ def call_model(
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.2,
+        "max_tokens": 1200,
         "response_format": {"type": "json_object"},
     }
     request = urllib.request.Request(
@@ -145,7 +160,7 @@ def call_model(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_model_request(request, timeout) as response:
             response_data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")

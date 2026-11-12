@@ -28,7 +28,10 @@ class FakeResponse:
 class ScenarioGeneratorTests(unittest.TestCase):
     def test_call_model_reads_openai_compatible_json(self):
         response = {"choices": [{"message": {"content": '{"routes": []}'}}]}
-        with patch("urllib.request.urlopen", return_value=FakeResponse(response)):
+        with patch(
+            "scenario_generator.scenario_generator._open_model_request",
+            return_value=FakeResponse(response),
+        ):
             result = call_model("description", "http://localhost:8000/v1", "model", None, 1)
         self.assertEqual(result, {"routes": []})
 

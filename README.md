@@ -35,10 +35,15 @@ use. The model endpoint is OpenAI-compatible and can be configured without
 changing code:
 
 ```bash
-export SCENARIO_LLM_ENDPOINT=http://remote-host:8000/v1
-export SCENARIO_LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+export SCENARIO_LLM_ENDPOINT=http://localhost:9000/v1
+export SCENARIO_LLM_MODEL=Qwen/Qwen2.5-VL-7B-Instruct
 export SCENARIO_LLM_API_KEY=not-needed
 ```
+
+For local endpoints (`localhost`, `127.0.0.1`, or `::1`), the generator
+intentionally bypasses inherited `HTTP_PROXY`/`HTTPS_PROXY` settings so those
+requests do not get sent to an external proxy. Remote model endpoints still
+use the server's normal proxy environment.
 
 The generator rejects unknown scenario types, missing parameters, invalid
 weather, invalid waypoint indices, and malformed model responses before
