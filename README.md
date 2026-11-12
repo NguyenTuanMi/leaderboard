@@ -17,7 +17,7 @@ More information can be found [here](https://leaderboard.carla.org/)
 
 ## LLM scenario route generator
 
-`scenario_generator/scenario_generator.py` can turn a natural-language
+`scenario_generator/inference_server.py` can turn a natural-language
 description into one or more validated route entries in
 `data/routes_devtest.xml`. It copies waypoints from an existing route and needs
 a running CARLA server (same Python environment as `run_leaderboard.sh`, so
@@ -30,7 +30,7 @@ close along the route, invalid parameter values) are sent back to the model for 
 retry:
 
 ```bash
-python3 scenario_generator/scenario_generator.py \
+python3 scenario_generator/inference_server.py \
   --template-route 0 \
   --description "Add a pedestrian crossing and a control-loss event near the middle of the route" \
   --carla-host localhost --carla-port 2000

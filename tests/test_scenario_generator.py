@@ -4,16 +4,18 @@ import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
-from scenario_generator.scenario_generator import (
+from scenario_generator.inference_server import perform_generation, run_session
+from scenario_generator.scenario_generation.layers.inference_layer import _parse_model_json, call_model
+from scenario_generator.scenario_generation.layers.validation_layer import validate_route
+from scenario_generator.scenario_generation.scenario_helper import (
     DenseRoute,
     GenerationError,
     _append_generated_routes,
-    _parse_model_json,
-    _validate_route,
-    call_model,
-    generate_routes,
-    interactive_loop,
+    build_prompt,
 )
+
+INFERENCE = "scenario_generator.scenario_generation.layers.inference_layer"
+HELPER = "scenario_generator.scenario_generation.scenario_helper"
 
 
 class FakeResponse:
@@ -34,7 +36,7 @@ class ScenarioGeneratorTests(unittest.TestCase):
     def test_call_model_reads_openai_compatible_json(self):
         response = {"choices": [{"message": {"content": '{"routes": []}'}}]}
         with patch(
-            "scenario_generator.scenario_generator._open_model_request",
+            f"{INFERENCE}._open_model_request",
             return_value=FakeResponse(response),
         ):
             result = call_model("description", "http://localhost:8000/v1", "model", None, 1)
@@ -47,7 +49,7 @@ class ScenarioGeneratorTests(unittest.TestCase):
         return DenseRoute.from_poses(poses)
 
     def _validate(self, scenarios, **kwargs):
-        return _validate_route(
+        return validate_route(
             {"weather": [{"route_percentage": 0}], "scenarios": scenarios},
             "Town12", self._route(), 10, **kwargs,
         )
@@ -140,8 +142,8 @@ class ScenarioGeneratorTests(unittest.TestCase):
             prompts.append(prompt)
             return bad if len(prompts) == 1 else good
 
-        with patch("scenario_generator.scenario_generator._ask_model", side_effect=fake):
-            result = generate_routes(self._args(), "x", "Town12", self._route())
+        with patch(f"{INFERENCE}._ask_model", side_effect=fake):
+            result = perform_generation(self._args(), "x", "Town12", self._route())
         self.assertEqual(result[0][1][0]["route_index"], 5)
         self.assertIn("VALIDATION RETRY", prompts[1])
         self.assertIn("999", prompts[1])
@@ -156,16 +158,15 @@ class ScenarioGeneratorTests(unittest.TestCase):
         replies = [{"routes": []}, good]
         args = self._args(max_requests=1)
         with patch("builtins.input", side_effect=["bad prompt", "/count 1", "good prompt", "/quit"]), \
-             patch("scenario_generator.scenario_generator._ask_model", side_effect=replies), \
-             patch("scenario_generator.scenario_generator.write_xml") as write:
-            interactive_loop(args, root, root.find("route"), None, "Town12", self._route())
+             patch(f"{INFERENCE}._ask_model", side_effect=replies), \
+             patch(f"{HELPER}.write_xml") as write:
+            run_session(args, root, root.find("route"), None, "Town12", self._route(), True)
         self.assertEqual(len(root.findall("route")), 2)
         write.assert_called_once()
 
     def test_user_prompt_mentions_json(self):
         # OpenAI JSON mode requires "json" in the user input, not only the system prompt.
-        from scenario_generator.scenario_generator import _build_prompt
-        prompt = _build_prompt(self._args(), "Town12", self._route(), "desc")
+        prompt = build_prompt(self._args(), "Town12", self._route(), "desc")
         self.assertIn("JSON", prompt)
 
     def test_parse_model_json_strips_code_fences(self):
