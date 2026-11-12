@@ -162,6 +162,12 @@ class ScenarioGeneratorTests(unittest.TestCase):
         self.assertEqual(len(root.findall("route")), 2)
         write.assert_called_once()
 
+    def test_user_prompt_mentions_json(self):
+        # OpenAI JSON mode requires "json" in the user input, not only the system prompt.
+        from scenario_generator.scenario_generator import _build_prompt
+        prompt = _build_prompt(self._args(), "Town12", self._route(), "desc")
+        self.assertIn("JSON", prompt)
+
     def test_parse_model_json_strips_code_fences(self):
         self.assertEqual(_parse_model_json('```json\n{"a": 1}\n```'), {"a": 1})
 

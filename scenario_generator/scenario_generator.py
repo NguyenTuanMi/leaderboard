@@ -653,7 +653,9 @@ def _build_prompt(args: argparse.Namespace, town: str, dense_route: DenseRoute, 
         f"Maximum scenarios per route: {args.max_scenarios}\n"
         f"Allowed scenario parameter schema: {json.dumps(SCENARIO_PARAMETERS, sort_keys=True)}\n"
         f"Allowed weather attributes: {json.dumps(sorted(WEATHER_ATTRIBUTES))}\n"
-        f"User description: {description}"
+        f"User description: {description}\n"
+        "Respond with a single JSON object only (no prose, no markdown), in the JSON shape "
+        "described in the system prompt."
     )
 
 
