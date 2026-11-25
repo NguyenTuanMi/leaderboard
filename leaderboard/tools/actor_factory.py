@@ -174,6 +174,9 @@ def create_blueprint(model, rolename='scenario', color=None, attribute_filter=No
     if blueprint.has_attribute('role_name'):
         blueprint.set_attribute('role_name', rolename)
 
+    if rolename == 'hero' and blueprint.has_attribute('ros_name'):
+        blueprint.set_attribute('ros_name', 'hero')
+
     return blueprint
 
 
