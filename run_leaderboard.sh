@@ -2,7 +2,7 @@
 
 export TEAM_AGENT=$LEADERBOARD_ROOT/leaderboard/autoagents/human_agent.py
 
-export ROUTES=$LEADERBOARD_ROOT/data/routes_devtest.xml
+export ROUTES=$LEADERBOARD_ROOT/data/generated/routes_devtest_staticcutin.xml
 export ROUTES_SUBSET=0
 export REPETITIONS=1
 
