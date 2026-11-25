@@ -1,0 +1,83 @@
+{
+  "validation": {
+    "weather": {
+      "enabled": true,
+      "weather_attributes": [
+        "cloudiness", "precipitation", "precipitation_deposits", "wetness",
+        "wind_intensity", "sun_azimuth_angle", "sun_altitude_angle",
+        "fog_density", "fog_distance", "scatter_intensity", "mie_scattering_scale",
+        "rayleigh_scattering_scale", "dust_storm", "fog_falloff"
+      ]
+    },
+    "scenario_parameters": {
+      "enabled": true,
+      "location_parameters": ["start_actor_flow", "end_actor_flow", "other_actor_location"],
+      "range_parameters": ["source_dist_interval", "frequency"],
+      "positive_parameters": [
+        "distance", "speed", "flow_speed", "frequency", "bicycle_drive_distance",
+        "bicycle_speed", "front_vehicle_distance", "behind_vehicle_distance",
+        "source_dist_interval", "road_spawn_dist", "opposite_source_dist",
+        "opposite_max_actors", "opposite_spawn_dist", "junction_source_dist",
+        "junction_max_actors", "junction_spawn_dist"
+      ],
+      "string_parameters": ["blocker_model"],
+      "boolean_parameters": ["opposite_active"],
+      "enums": {"direction": ["left", "right"]},
+      "scenarios": {
+        "SignalizedJunctionLeftTurn": {"required": [], "optional": ["flow_speed", "source_dist_interval"]},
+        "SignalizedJunctionRightTurn": {"required": [], "optional": ["flow_speed", "source_dist_interval"]},
+        "OppositeVehicleRunningRedLight": {"required": [], "optional": ["direction"]},
+        "NonSignalizedJunctionLeftTurn": {"required": [], "optional": ["flow_speed", "source_dist_interval"]},
+        "NonSignalizedJunctionRightTurn": {"required": [], "optional": ["flow_speed", "source_dist_interval"]},
+        "OppositeVehicleTakingPriority": {"required": [], "optional": ["direction"]},
+        "DynamicObjectCrossing": {"required": [], "optional": ["distance", "direction", "blocker_model", "crossing_angle"]},
+        "ParkingCrossingPedestrian": {"required": [], "optional": ["distance", "direction", "crossing_angle"]},
+        "PedestrianCrossing": {"required": [], "optional": ["distance", "direction", "crossing_angle"]},
+        "VehicleTurningRoute": {"required": [], "optional": ["start_actor_flow", "end_actor_flow", "flow_speed", "source_dist_interval"]},
+        "VehicleTurningRoutePedestrian": {"required": [], "optional": ["start_actor_flow", "end_actor_flow", "flow_speed", "source_dist_interval"]},
+        "BlockedIntersection": {"required": [], "optional": ["start_actor_flow", "end_actor_flow", "flow_speed", "source_dist_interval"]},
+        "EnterActorFlow": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "EnterActorFlowV2": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "InterurbanActorFlow": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "InterurbanAdvancedActorFlow": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "HighwayExit": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "MergerIntoSlowTraffic": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "MergerIntoSlowTrafficV2": {"required": ["start_actor_flow", "end_actor_flow"], "optional": ["flow_speed", "source_dist_interval"]},
+        "CrossingBicycleFlow": {"required": ["start_actor_flow"], "optional": []},
+        "HighwayCutIn": {"required": ["other_actor_location"], "optional": []},
+        "ConstructionObstacle": {"required": [], "optional": ["distance", "direction", "speed"]},
+        "ConstructionObstacleTwoWays": {"required": [], "optional": ["distance", "frequency"]},
+        "Accident": {"required": [], "optional": ["distance", "direction", "speed"]},
+        "AccidentTwoWays": {"required": [], "optional": ["distance", "frequency"]},
+        "ParkedObstacle": {"required": [], "optional": ["distance", "direction", "speed"]},
+        "ParkedObstacleTwoWays": {"required": [], "optional": ["distance", "frequency"]},
+        "VehicleOpensDoorTwoWays": {"required": [], "optional": ["distance", "frequency"]},
+        "HazardAtSideLane": {"required": [], "optional": ["distance", "speed", "bicycle_drive_distance", "bicycle_speed"]},
+        "HazardAtSideLaneTwoWays": {"required": [], "optional": ["distance", "frequency", "bicycle_drive_distance", "bicycle_speed"]},
+        "InvadingTurn": {"required": [], "optional": ["distance", "offset"]},
+        "ParkingCutIn": {"required": [], "optional": ["direction"]},
+        "StaticCutIn": {"required": [], "optional": ["distance", "direction"]},
+        "ControlLoss": {"required": [], "optional": []},
+        "HardBreakRoute": {"required": [], "optional": []},
+        "ParkingExit": {"required": [], "optional": ["direction", "front_vehicle_distance", "behind_vehicle_distance"]},
+        "YieldToEmergencyVehicle": {"required": [], "optional": ["distance"]},
+        "BackgroundActivityParametrizer": {
+          "required": [],
+          "optional": [
+            "num_front_vehicles", "num_back_vehicles", "road_spawn_dist",
+            "opposite_source_dist", "opposite_max_actors", "opposite_spawn_dist",
+            "opposite_active", "junction_source_dist", "junction_max_actors",
+            "junction_spawn_dist", "junction_source_perc"
+          ]
+        },
+        "PriorityAtJunction": {"required": [], "optional": []}
+      }
+    },
+    "scenario_at_route": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 2000,
+      "timeout": 10.0
+    }
+  }
+}

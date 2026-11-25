@@ -2,8 +2,8 @@
 
 export TEAM_AGENT=$LEADERBOARD_ROOT/leaderboard/autoagents/human_agent.py
 
-export ROUTES=$LEADERBOARD_ROOT/data/generated/routes_devtest_staticcutin.xml
-export ROUTES_SUBSET=0
+export ROUTES=$LEADERBOARD_ROOT/data/generated/routes_devtest_pedcrossing_single.xml
+export ROUTES_SUBSET=2
 export REPETITIONS=1
 
 export DEBUG_CHALLENGE=1
