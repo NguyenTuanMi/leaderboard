@@ -15,21 +15,25 @@ if str(REPO_ROOT) not in sys.path:
 if __package__:
     from .plugins.scenario_at_route_validation import ScenarioAtRouteValidation
     from .plugins.scenario_parameter_validation import ParameterValidation
+    from .plugins.weather_validation import WeatherValidation
+    from .plugins.passthrough_validation import PassThroughValidation
     from .plugins.validation_base import ValidationBase
     from .plugins.validation_helper import ValidationContext, ValidationOutput
-    from .plugins.weather_validation import WeatherValidation
+    
 else:
     from plugins.scenario_at_route_validation import ScenarioAtRouteValidation
     from plugins.scenario_parameter_validation import ParameterValidation
+    from plugins.weather_validation import WeatherValidation
+    from plugins.passthrough_validation import PassThroughValidation
     from plugins.validation_base import ValidationBase
     from plugins.validation_helper import ValidationContext, ValidationOutput
-    from plugins.weather_validation import WeatherValidation
 
 
 PLUGIN_REGISTRY: dict[str, type[ValidationBase]] = {
     "weather": WeatherValidation,
     "scenario_parameters": ParameterValidation,
     "scenario_at_route": ScenarioAtRouteValidation,
+    "passthrough": PassThroughValidation,
 }
 
 
