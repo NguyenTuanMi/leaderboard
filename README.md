@@ -57,6 +57,11 @@ Hermes is used here as a scenario authoring and repair agent, not as the driving
 
 This repair loop is Hermes reflecting on validator feedback. The validator itself does not modify the XML or train/update the Hermes model. A passing validator confirms the checks it implements; it does not certify scenario behavior or guarantee that a driving agent will finish the route.
 
+To start Hermes Agent, please follow [Hermes Agent Guidance](https://github.com/NousResearch/hermes-agent) to download and connect with your local model/API. After that, please open a terminal, navigate to `carla_ws`, and type the following command:
+   ```bash
+   hermes chat --tui
+   ```
+
 ## Run Leaderboard
 
 `run_leaderboard.sh` is the direct host-side entry point. Before starting, make sure the CARLA server is already running with the town needed by the selected route. From a terminal where the CARLA and ScenarioRunner paths are configured:
