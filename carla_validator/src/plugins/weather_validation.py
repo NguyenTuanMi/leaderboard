@@ -1,5 +1,3 @@
-
-
 import math
 
 from .validation_base import ValidationBase

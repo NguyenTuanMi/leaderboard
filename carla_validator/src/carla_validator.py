@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -44,7 +43,7 @@ class ValidatorConfigurationError(ValueError):
 class CarlaValidator:
     def __init__(self, config_path: str | Path):
         self.config_path = Path(config_path)
-        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
         if config is None:
             config = {}
         if not isinstance(config, dict):
@@ -110,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validator = CarlaValidator(args.config)
         results = validator.validate_route(args.route_file, args.route_id)
-    except (OSError, ET.ParseError, ValidatorConfigurationError, json.JSONDecodeError) as error:
+    except (OSError, ET.ParseError, ValidatorConfigurationError, yaml.YAMLError) as error:
         print(f"VALIDATION ERROR: {error}", file=sys.stderr)
         return 2
 

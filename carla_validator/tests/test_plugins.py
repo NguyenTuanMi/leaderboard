@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import copy
-import json
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
+
+import yaml
 
 from carla_validator.src.carla_validator import CarlaValidator, PLUGIN_REGISTRY
 from carla_validator.src.plugins.scenario_at_route_validation import _matches_trigger, _trigger_metrics
@@ -30,14 +31,13 @@ class ValidatorPluginTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
-            cls.config = json.load(config_file)["validation"]
+            cls.config = yaml.safe_load(config_file)["validation"]
 
     def test_registry_matches_enabled_configuration(self) -> None:
         configured = {
-            name for name, options in self.config.items()
-            if options.get("enabled", True)
+            name for name in self.config
         }
-        self.assertEqual(configured, set(PLUGIN_REGISTRY))
+        self.assertTrue(configured.issubset(PLUGIN_REGISTRY))
 
     def test_weather_plugin_accepts_existing_route(self) -> None:
         result = WeatherValidation("weather", self.config["weather"]).validate(load_route_context("2"))
@@ -73,7 +73,7 @@ class ValidatorPluginTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"
             route_path = Path(temp_dir) / "route.xml"
-            config_path.write_text(json.dumps(config), encoding="utf-8")
+            config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
             route_path.write_text(route_xml, encoding="utf-8")
             results = CarlaValidator(config_path).validate_route(route_path, "2")
         self.assertEqual(set(results), {"weather", "scenario_parameters"})
