@@ -30,8 +30,8 @@ class ParameterValidation(ValidationBase):
                 errors.append(f"{name} ({scenario_type}): no parameter schema is configured")
                 continue
 
-            required = set(schema.get("required", []))
-            optional = set(schema.get("optional", []))
+            required = set(schema.get("required") or [])
+            optional = set(schema.get("optional") or [])
             if required & optional:
                 errors.append(f"{name} ({scenario_type}): schema repeats required and optional fields")
             allowed = required | optional
